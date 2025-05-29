@@ -1,0 +1,39 @@
+# Environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Large data files (adjust as needed)
+data/
+*.csv
+*.json # If large
+*.zip
+*.tar.gz
+*.pkl
+
+# Model files
+models/
+checkpoints/
+*.pth
+*.pt
+*.h5
+*.keras
+*.pb
+*.onnx
+
+# Logs
+logs/
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
