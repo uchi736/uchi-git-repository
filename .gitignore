@@ -1,40 +1,19 @@
-# Environments
-.env
-.venv/
-env/
-venv/
-ENV/
-myenv/
-
-# Python cache
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
+# Virtualenv
+myenv/  # あなたの仮想環境フォルダ名
+venv/
+env/
+.venv/
+.env.*
+!.env.example # .env.example は含めたい場合
 
-# Large data files (adjust as needed)
-data/
-*.csv
-*.json # If large
-*.zip
-*.tar.gz
-*.pkl
+# Environment variables
+.env # .env ファイルそのもの
 
-# Model files
-models/
-checkpoints/
-*.pth
-*.pt
-*.h5
-*.keras
-*.pb
-*.onnx
-
-# Logs
-logs/
-*.log
-
-# OS generated files
-.DS_Store
-Thumbs.db
+# VSCode
+.vscode/
