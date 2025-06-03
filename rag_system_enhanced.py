@@ -1,6 +1,7 @@
 """rag_system_enhanced.py
 ~~~~~~~~~~~~~~~~~~~~~~~
 Enhanced RAG System with Query Expansion, RAG-Fusion, and Text-to-SQL functionality
+Now supports Azure OpenAI Service.
 
 Langsmithでトレースを有効にするには、以下の環境変数を設定してください:
 LANGCHAIN_TRACING_V2="true"
@@ -35,7 +36,9 @@ except ImportError:
     TextractLoader = None
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+# OpenAI and AzureOpenAI imports
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI, AzureChatOpenAI, AzureOpenAIEmbeddings
+
 from langchain_community.vectorstores import PGVector
 from langchain_community.vectorstores.pgvector import DistanceStrategy
 from langchain_core.documents import Document
@@ -65,33 +68,41 @@ except ModuleNotFoundError:
 
 @dataclass
 class Config:
+    # Database settings
     db_host: str = os.getenv("DB_HOST", "localhost")
     db_port: str = os.getenv("DB_PORT", "5432")
     db_name: str = os.getenv("DB_NAME", "postgres")
     db_user: str = os.getenv("DB_USER", "postgres")
     db_password: str = os.getenv("DB_PASSWORD", "your-password")
 
+    # OpenAI API settings (used as fallback if Azure is not configured)
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-    llm_model: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    # Model identifiers (used for UI/logic, not directly for API calls if Azure)
+    embedding_model_identifier: str = os.getenv("EMBEDDING_MODEL_IDENTIFIER", "text-embedding-3-small")
+    llm_model_identifier: str = os.getenv("LLM_MODEL_IDENTIFIER", "gpt-4o-mini")
 
+    # Azure OpenAI Service settings
+    azure_openai_api_key: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_openai_endpoint: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_openai_api_version: Optional[str] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01") # Example
+    azure_openai_chat_deployment_name: Optional[str] = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+    azure_openai_embedding_deployment_name: Optional[str] = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+    # Note: embedding_dimensions is often tied to the Azure deployment, so not explicitly set here unless needed.
+
+    # RAG and Search settings
     chunk_size: int = int(os.getenv("CHUNK_SIZE", 1000))
     chunk_overlap: int = int(os.getenv("CHUNK_OVERLAP", 200))
     vector_search_k: int = int(os.getenv("VECTOR_SEARCH_K", 10))
     keyword_search_k: int = int(os.getenv("KEYWORD_SEARCH_K", 10))
     final_k: int = int(os.getenv("FINAL_K", 5))
-
     collection_name: str = os.getenv("COLLECTION_NAME", "documents")
-    embedding_dimensions: int = int(os.getenv("EMBEDDING_DIMENSIONS", 1536))
     fts_language: str = os.getenv("FTS_LANGUAGE", "english")
-
     rrf_k_for_fusion: int = int(os.getenv("RRF_K_FOR_FUSION", 60))
 
-    # Text-to-SQL用設定
-    enable_text_to_sql: bool = True # Trueに設定してSQL機能を有効化
-    max_sql_results: int = int(os.getenv("MAX_SQL_RESULTS", 1000)) # Max results to fetch from DB
-    max_sql_preview_rows_for_llm: int = int(os.getenv("MAX_SQL_PREVIEW_ROWS_FOR_LLM", 20)) # Max results to show LLM for summarization
-    # ユーザーが作成したデータテーブルのプレフィックス（get_data_tablesで使用）
+    # Text-to-SQL settings
+    enable_text_to_sql: bool = True 
+    max_sql_results: int = int(os.getenv("MAX_SQL_RESULTS", 1000)) 
+    max_sql_preview_rows_for_llm: int = int(os.getenv("MAX_SQL_PREVIEW_ROWS_FOR_LLM", 20))
     user_table_prefix: str = os.getenv("USER_TABLE_PREFIX", "data_")
 
 
@@ -145,8 +156,9 @@ class HybridRetriever(BaseRetriever):
 
     async def _aget_relevant_documents(self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None, **kwargs: Any) -> List[Document]:
         config = kwargs.get("config")
-        vres = self._vector_search(query, config=config)
-        kres = self._keyword_search(query, config=config)
+        vres = self._vector_search(query, config=config) # Assuming _vector_search is synchronous
+        kres = self._keyword_search(query, config=config) # Assuming _keyword_search is synchronous
+        # If these need to be async, they should be awaited.
         return self._reciprocal_rank_fusion_hybrid(vres, kres)
 
 ###############################################################################
@@ -156,13 +168,57 @@ class HybridRetriever(BaseRetriever):
 class RAGSystem:
     def __init__(self, cfg: Config):
         if _PG_DIALECT is None: raise RuntimeError("PostgreSQL driver not installed.")
-        if not cfg.openai_api_key: raise ValueError("OPENAI_API_KEY is missing.")
         self.config = cfg
-        self.embeddings = OpenAIEmbeddings(openai_api_key=cfg.openai_api_key, model=cfg.embedding_model)
-        self.llm = ChatOpenAI(openai_api_key=cfg.openai_api_key, model_name=cfg.llm_model, temperature=0.7)
+
+        # Initialize LLM and Embeddings based on Azure or OpenAI config
+        if cfg.azure_openai_api_key and cfg.azure_openai_endpoint and \
+           cfg.azure_openai_chat_deployment_name and cfg.azure_openai_embedding_deployment_name:
+            # Use Azure OpenAI
+            self.llm = AzureChatOpenAI(
+                azure_endpoint=cfg.azure_openai_endpoint,
+                api_key=cfg.azure_openai_api_key,
+                api_version=cfg.azure_openai_api_version,
+                azure_deployment=cfg.azure_openai_chat_deployment_name,
+                temperature=0.7
+            )
+            self.embeddings = AzureOpenAIEmbeddings(
+                azure_endpoint=cfg.azure_openai_endpoint,
+                api_key=cfg.azure_openai_api_key,
+                api_version=cfg.azure_openai_api_version,
+                azure_deployment=cfg.azure_openai_embedding_deployment_name
+                # chunk_size can be set if needed, defaults to 1 for AzureOpenAIEmbeddings
+            )
+            print("RAGSystem initialized with Azure OpenAI.")
+        elif cfg.openai_api_key:
+            # Use OpenAI as fallback
+            if not cfg.llm_model_identifier or not cfg.embedding_model_identifier:
+                 raise ValueError("OpenAI model identifiers (llm_model_identifier, embedding_model_identifier) are missing in Config for OpenAI fallback.")
+            self.llm = ChatOpenAI(
+                openai_api_key=cfg.openai_api_key, 
+                model_name=cfg.llm_model_identifier, # Use identifier
+                temperature=0.7
+            )
+            self.embeddings = OpenAIEmbeddings(
+                openai_api_key=cfg.openai_api_key, 
+                model=cfg.embedding_model_identifier # Use identifier
+            )
+            print("RAGSystem initialized with OpenAI (fallback).")
+        else:
+            raise ValueError("Azure OpenAI or OpenAI API credentials are not configured.")
+
         self.connection_string = self._conn_str(); self._init_db()
-        self.vector_store = PGVector(connection_string=self.connection_string, collection_name=cfg.collection_name, embedding_function=self.embeddings, use_jsonb=True, distance_strategy=DistanceStrategy.COSINE)
-        self.retriever = HybridRetriever(vector_store=self.vector_store, connection_string=self.connection_string, config_params=cfg)
+        self.vector_store = PGVector(
+            connection_string=self.connection_string, 
+            collection_name=cfg.collection_name, 
+            embedding_function=self.embeddings, 
+            use_jsonb=True, 
+            distance_strategy=DistanceStrategy.COSINE
+        )
+        self.retriever = HybridRetriever(
+            vector_store=self.vector_store, 
+            connection_string=self.connection_string, 
+            config_params=cfg
+        )
 
         self.base_rag_prompt = ChatPromptTemplate.from_template(
             """あなたは親切で知識豊富なアシスタントです。以下のコンテキストを参考に質問に答えてください。\n\nコンテキスト:\n{context}\n\n質問: {question}\n\n回答:""" # You are a kind and knowledgeable assistant. Please answer the question based on the following context. Context: ... Question: ... Answer:
